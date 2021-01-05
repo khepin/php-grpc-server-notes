@@ -5,6 +5,8 @@
 PHP "doesn't have support for building gRPC servers". This is true if using traditional ways of running PHP (via Apache, NGINX, PHP-FPM ...).
 RoadRunner is a Go server that offers a different way to run PHP applications and will allow us to create a gRPC server in PHP.
 
+The code is available at https://github.com/khepin/php-grpc-server-notes
+
 ## How RoadRunner works
 
 The Go RoadRunner server will run a couple of PHP workers. .f you've ever built a message queue consumer in PHP, also called queue workers or jobs sometimes, this is the same thing: a long running PHP process waiting to process messages.
