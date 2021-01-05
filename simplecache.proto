@@ -1,0 +1,55 @@
+syntax="proto3";
+package simplecache;
+
+option php_namespace="Khepin\\SimpleCache";
+option php_metadata_namespace="Khepin\\SimpleCache\\Meta";
+option go_package="github.com/khepin/simplecache/protos";
+
+import "google/api/annotations.proto";
+
+message SetRequest {
+    string Key = 1;
+    string Value = 2;
+}
+
+message SetResponse {
+    bool OK = 1;
+}
+
+message DelRequest {
+    string Key = 1;
+}
+
+message DelResponse {
+    bool OK = 1;
+}
+
+message GetRequest {
+    string Key = 1;
+}
+
+message GetResponse {
+    string Key = 1;
+    string Value = 2;
+}
+
+service SimpleCache {
+    rpc Set(SetRequest) returns (SetResponse) {
+        option (google.api.http) = {
+            post: "/v1/set",
+            body: "*"
+        };
+    };
+    rpc Del(DelRequest) returns (DelResponse) {
+        option (google.api.http) = {
+            post: "/v1/del",
+            body: "*"
+        };
+    };
+    rpc Get(GetRequest) returns (GetResponse) {
+        option (google.api.http) = {
+            post: "/v1/get",
+            body: "*"
+        };
+    };
+}

@@ -1,0 +1,29 @@
+version: '2'
+
+services:
+  proto:
+    build:
+      dockerfile: Dockerfile-proto
+      context: .
+    working_dir: /var/www
+    volumes:
+      - .:/var/www
+  simplecache:
+    image: php:7.4-cli
+    build:
+      dockerfile: Dockerfile-app
+      context: .
+    working_dir: /var/www
+    ports:
+      - 9090:9090
+    volumes:
+      - .:/var/www
+    command: ./appserver/appserver serve -v -d
+  gateway:
+    image: golang:latest
+    command: ./gateway
+    working_dir: /var/www
+    volumes:
+      - ./gateway:/var/www
+    ports:
+      - 8080:8080

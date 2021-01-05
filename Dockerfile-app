@@ -1,0 +1,6 @@
+FROM php:7.4-cli
+
+# Extensions
+RUN echo starting && \
+    docker-php-ext-enable grpc && \
+    docker-php-ext-enable protobuf

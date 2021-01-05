@@ -1,0 +1,200 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "simplecache.proto",
+    "version": "version not set"
+  },
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v1/del": {
+      "post": {
+        "operationId": "SimpleCache_Del",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/simplecacheDelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/simplecacheDelRequest"
+            }
+          }
+        ],
+        "tags": [
+          "SimpleCache"
+        ]
+      }
+    },
+    "/v1/get": {
+      "post": {
+        "operationId": "SimpleCache_Get",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/simplecacheGetResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/simplecacheGetRequest"
+            }
+          }
+        ],
+        "tags": [
+          "SimpleCache"
+        ]
+      }
+    },
+    "/v1/set": {
+      "post": {
+        "operationId": "SimpleCache_Set",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/simplecacheSetResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/simplecacheSetRequest"
+            }
+          }
+        ],
+        "tags": [
+          "SimpleCache"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "type_url": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "runtimeError": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "simplecacheDelRequest": {
+      "type": "object",
+      "properties": {
+        "Key": {
+          "type": "string"
+        }
+      }
+    },
+    "simplecacheDelResponse": {
+      "type": "object",
+      "properties": {
+        "OK": {
+          "type": "boolean"
+        }
+      }
+    },
+    "simplecacheGetRequest": {
+      "type": "object",
+      "properties": {
+        "Key": {
+          "type": "string"
+        }
+      }
+    },
+    "simplecacheGetResponse": {
+      "type": "object",
+      "properties": {
+        "Key": {
+          "type": "string"
+        },
+        "Value": {
+          "type": "string"
+        }
+      }
+    },
+    "simplecacheSetRequest": {
+      "type": "object",
+      "properties": {
+        "Key": {
+          "type": "string"
+        },
+        "Value": {
+          "type": "string"
+        }
+      }
+    },
+    "simplecacheSetResponse": {
+      "type": "object",
+      "properties": {
+        "OK": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

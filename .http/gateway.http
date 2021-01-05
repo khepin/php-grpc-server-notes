@@ -1,0 +1,15 @@
+POST http://localhost:8080/v1/get
+
+{
+    "Key": "hello"
+}
+
+
+###
+POST http://localhost:8080/v1/set
+
+{
+    "Key": "hello",
+    "Value": "world"
+}
+
