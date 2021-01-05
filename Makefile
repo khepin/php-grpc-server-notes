@@ -36,13 +36,17 @@ build-appserver-server: appserver/appserver
 appserver/appserver: $(wildcard appserver/**/*.go) $(wildcard appserver/*.go)
 	docker-compose run proto make appserver_from_within_container
 appserver_from_within_container:
-	cd appserver && go build -o appserver
+	# using `-o appserver` is broken after setting it as a `.gitignore` target
+	cd appserver && go build -o appserver-server
+	mv appserver/appserver-server appserver/appserver
 
 build-gateway-server: gateway/gateway
 gateway/gateway: $(wildcard gateway/**/*.go) $(wildcard gateway/*.go)
 	docker-compose run proto make gateway_from_within_container
 gateway_from_within_container:
-	cd gateway && go build -o gateway
+	# using `-o gateway` is broken after setting it as a `.gitignore` target
+	cd gateway && go build -o gateway-server
+	mv gateway/gateway-server gateway/gateway
 
 ###########################################################
 # Watchers
