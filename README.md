@@ -4,7 +4,7 @@ Roadrunner is a PHP application server written in Go. I'm principally interested
 - performance: since it keeps your PHP code running in a loop, you don't need to recreate the world on every request. This requires much more careful coding but can have a massive impact on performance.
 - gRPC: it gives us the ability to create gRPC servers in PHP which isn't possible through the standard gRPC extension for PHP or any other commonly used way to run PHP applications.
 
-In the last part, I covered how to get setup with roadrunner for gRPC.
+In the last part, I covered how to get setup with roadrunner for gRPC. Previous article: https://github.com/khepin/php-grpc-server-notes/blob/main/README.md
 
 Here we'll cover an interesting feature of roadrunner: the ability to write Go code and call it from our PHP application. In my tests (local machine with docker), the overhead of making such a call was around `0.2ms` which might be well worth it for many scenarios.
 
@@ -566,6 +566,8 @@ func (s *Service) prepareHttp() {
 ```
 
 Now if we build all our services, call the gRPC `Set` method of our cache which calls `rrdump`, we should be able to view our debug UI and open / close the args and stacktrace:
+
+![debug-gif](https://raw.githubusercontent.com/khepin/php-grpc-server-notes/debugger/debugger.gif)
 
 ## Conclusion thingy
 
