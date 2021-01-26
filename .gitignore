@@ -2,3 +2,4 @@ vendor/*
 appserver/appserver
 gateway/gateway
 TODO
+appserver/plugins/debugger/frontend/node_modules

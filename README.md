@@ -1,395 +1,268 @@
-# Building a gRPC server in PHP
+# Building a debugger Go plugin for Roadrunner
 
-**A series of notes / a rough tutorial**
+Roadrunner is a PHP application server written in Go. I'm principally interested in this technology for 2 main reasons:
+- performance: since it keeps your PHP code running in a loop, you don't need to recreate the world on every request. This requires much more careful coding but can have a massive impact on performance.
+- gRPC: it gives us the ability to create gRPC servers in PHP which isn't possible through the standard gRPC extension for PHP or any other commonly used way to run PHP applications.
 
-PHP "doesn't have support for building gRPC servers". This is true if using traditional ways of running PHP (via Apache, NGINX, PHP-FPM ...).
-RoadRunner is a Go server that offers a different way to run PHP applications and will allow us to create a gRPC server in PHP.
+In the last part, I covered how to get setup with roadrunner for gRPC.
 
-The code is available at https://github.com/khepin/php-grpc-server-notes
+Here we'll cover an interesting feature of roadrunner: the ability to write Go code and call it from our PHP application. In my tests (local machine with docker), the overhead of making such a call was around `0.2ms` which might be well worth it for many scenarios.
 
-## How RoadRunner works
+The go addon to roadrunner we'll be writing though has nothing to do with performance.
 
-The Go RoadRunner server will run a couple of PHP workers. .f you've ever built a message queue consumer in PHP, also called queue workers or jobs sometimes, this is the same thing: a long running PHP process waiting to process messages.
+## Debugging on Roadrunner
 
-There are 2 distinctions between RoadRunner workers and the ones you might have already built for queues:
-1. The delivery mechanism.
-RoadRunner workers do not receive the payload to work on from a queue or message broker but from RoadRunner via either:
-- Standard Input (STDIN) of the running PHP script
-- TCP
-- Local unix socket
-2. They can return a response. Most of the time in PHP, queue workers are used to offload some work that can happen in the background. There is no client waiting for a response. In the case of RoadRunner workers, a response is expected.
+I've found simple debugging on Roadrunner to be sub-par so far. I don't use a debugger. All my debugging is done by thinking where the problem could be, making an assumption / hypothesis and verifying it's validity via the almighty dump / print statement.
 
-## RoadRunner and HTTP
+When using Roadrunner, printing / echo-ing to stdout is interpreted as PHP sending information back to the Roadrunner server and should follow a specific format, for that. Likely a serialized Response object. So we can't like with `mod-http` or `php-fpm` just echo things out as part of the response. This works "even less" in a way when using gRPC.
 
-RoadRunner can run your workers to respond to HTTP requests. There's even integrations available for Symfony, Laravel and a host of other frameworks.
+Roadrunner provides an ability to use `error_log` and have the results of that call printed as part of the standard error roadrunner logs. `error_log` kinda works, but it's nothing to be compared with symfony's `var_dumper` for example.
 
-Since with RoadRunner you have a long running PHP process responding to your requests, you can achieve much higher performance as you don't have to reload everything for each request for example:
-- no need to reload the PHP code responding to the request (though opcode cache makes this step very low cost on more traditional servers for PHP)
-- no need to re-connect to your database on every request (PHP allows persistent DB connections, but they're rarely used. Connecting to a DB that has SSL enabled has a significant cost here, usually higher than 10ms)
-- possibility to share a common Guzzle Client so that if you need to connect to a remote HTTP service, the underlying connection doesn't need to be reset all the time. Here again, creating a brand new HTTPS connection has a non-trivial cost and latency.
+So here's what we're going to build: a debug server. Whenever we call the `rrdump($var)` function in our PHP code, it'll send a roadrunner RPC message to a Go service we built with a nice HTML representation of the data being dumped. For good measure, we'll throw in the stack trace, the file + line where this was called and the arguments of the function that was being called.
 
-Here, we're not so interested in our ability to run HTTP applications, but more in the possibility of creating a gRPC server in PHP.
+## The PHP Dumper
 
-## gRPC
+On the PHP side, we create an `RRDumper` class to hold the logic of dumping a variable. Since we'll want this to be globally available via the `rrdump` function for ease of use, we'll make sure this class has a singleton static instance.
 
-### Service definition
-
-We'll create a very simple cache service. This will only have 3 methods: Get, Set and Delete. This will be enough for us to demonstrate how to build a gRPC server without creating a complex project.
-
-gRPC service definitions are done via protobuf and in this case our protobuf file is going to look like this:
-
-```proto
-//simplecache.proto
-syntax="proto3";
-package simplecache;
-
-option php_namespace="Khepin\\SimpleCache";
-option php_metadata_namespace="Khepin\\SimpleCache\\Meta";
-
-message SetRequest {
-    string Key = 1;
-    string Value = 2;
-}
-
-message SetResponse {
-    bool OK = 1;
-}
-
-message DelRequest {
-    string Key = 1;
-}
-
-message DelResponse {
-    bool OK = 1;
-}
-
-message GetRequest {
-    string Key = 1;
-}
-
-message GetResponse {
-    string Key = 1;
-    string Value = 2;
-}
-
-service SimpleCache {
-    rpc Set(SetRequest) returns (SetResponse);
-    rpc Del(DelRequest) returns (DelResponse);
-    rpc Get(GetRequest) returns (GetResponse);
-}
-```
-
-### Code generation
-
-We can now generate the PHP code. For this we need:
-- the `protoc` protobuf compiler
-- the `protobuf-grpc` plugin (to generate a gRPC PHP client)
-- the RoadRunner grpc plugin (generates the server side server interface)
-
-To avoid having to install everything on your machine, we'll use `docker-compose` and a custom Dockerfile. At this stage, docker-compose should look like this:
-
-```yaml
-version: '2'
-
-services:
-  proto:
-    build:
-      dockerfile: Dockerfile-proto
-      context: .
-    working_dir: /var/www
-    volumes:
-      - .:/var/www
-```
-
-And the Dockerfile:
-
-⚠️ This is not exactly how you'd normaly write a Dockerfile. You would typically reduce everything down to a single `RUN` and a multi-line script. This is not a topic for this time.
-
-```Dockerfile
-# Dockerfile-proto
-FROM golang:1.15
-
-ARG PROTOBUF_VERSION=3.14.0
-ARG PHP_GRPC_VERSION=1.34.0
-
-# Utils
-RUN apt-get update
-RUN apt-get install unzip
-# Protobuf
-RUN mkdir -p /protobuf
-RUN cd /protobuf \
-    && wget https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOBUF_VERSION}/protoc-${PROTOBUF_VERSION}-linux-x86_64.zip -O protobuf.zip \
-    && unzip protobuf.zip && rm protobuf.zip
-
-# grpc PHP (generate client)
-RUN apt-get install php php-dev php-pear phpunit zlib1g-dev -y
-RUN pecl install grpc-${PHP_GRPC_VERSION}
-RUN cd /protobuf && git clone -b v${PHP_GRPC_VERSION} https://github.com/grpc/grpc \
-    && cd /protobuf/grpc && git submodule update --init
-RUN apt-get install autoconf libtool automake build-essential -y
-RUN cd /protobuf/grpc && make grpc_php_plugin
-
-# RoadRunner's custom PHP gRPC plugin (server interface definition)
-RUN apt-get install -y git
-RUN git clone https://github.com/spiral/php-grpc.git
-RUN cd php-grpc/cmd/rr-grpc && go install
-RUN cd php-grpc/cmd/protoc-gen-php-grpc && go install
-
-ENV PATH "/protobuf/bin:${PATH}"
-```
-
-The command to build the generated PHP protobuf code isn't something you'd remember how to type each time, so we'll start a Makefile with that build command:
-
-```Makefile
-# Makefile
-
-# Note `$(: a b c)` allows to put a comment in the middle of a bash command
-proto_from_within_container:
-	# PHP
-	protoc /var/www/simplecache.proto \
-		--php_out=/var/www/php-client/src \
-		$(: 👇 custom plugin from roadrunner to generate server interface) \
-		--php-grpc_out=/var/www/php-client/src \
-		$(: 👇 generates the client code) \
-		--grpc_out=/var/www/php-client/src \
-		--plugin=protoc-gen-grpc=/protobuf/grpc/bins/opt/grpc_php_plugin \
-		--proto_path /var/www
-
-proto:
-	rm -rf php-client/src
-	mkdir -p php-client/src
-	docker-compose run proto make proto_from_within_container
-```
-
-Now we can just run `make proto` to generate our PHP code. Note that in this case we have generated all the protobuf classes as well as the client and the server interface definition under `php-client`.
-
-⚠️ The first run will build your docker image which will take a while (10 to 20 minutes for me).
-
-Let's look at the generated server interface:
+To start, we'll have a `getDumpString` method on that class that will allow us to retrieve the HTML dumped value for a given variable. We're using the `symfony/var-dumper` package for this rendering. Our class looks like:
 
 ```php
-<?php
-# Generated by the protocol buffer compiler (spiral/php-grpc). DO NOT EDIT!
-# source: simplecache.proto
-
-namespace Khepin\SimpleCache;
-
-use Spiral\GRPC;
-
-interface SimpleCacheInterface extends GRPC\ServiceInterface
+class RRDumper
 {
-    // GRPC specific service name.
-    public const NAME = "simplecache.SimpleCache";
+    protected static RRDumper $instance;
 
-    /**
-    * @param GRPC\ContextInterface $ctx
-    * @param SetRequest $in
-    * @return SetResponse
-    *
-    * @throws GRPC\Exception\InvokeException
-    */
-    public function Set(GRPC\ContextInterface $ctx, SetRequest $in): SetResponse;
+    protected VarCloner $cloner;
 
-    /**
-    * @param GRPC\ContextInterface $ctx
-    * @param DelRequest $in
-    * @return DelResponse
-    *
-    * @throws GRPC\Exception\InvokeException
-    */
-    public function Del(GRPC\ContextInterface $ctx, DelRequest $in): DelResponse;
+    protected HtmlDumper $dumper;
 
-    /**
-    * @param GRPC\ContextInterface $ctx
-    * @param GetRequest $in
-    * @return GetResponse
-    *
-    * @throws GRPC\Exception\InvokeException
-    */
-    public function Get(GRPC\ContextInterface $ctx, GetRequest $in): GetResponse;
-}
-```
+    public static function i()
+    {
+        return self::$instance;
+    }
 
-For other apps to be able to use this client code, you would then have multiple choices:
-- make this a repo of its own with its own `composer.json`
-- make a git submodule for `php-client` again, defining its own `composer.json`
+    public static function setupInstance()
+    {
+        self::$instance = new self;
+        self::$instance->cloner = new VarCloner();
+        self::$instance->dumper = new HtmlDumper();
+    }
 
-In this case since we will keep everything local under the same repository / directory, we'll define a global `composer.json` and will not concern ourselves with making the client code itself available to other apps.
+    public function getDumpString($variable) : string
+    {
+        $output = '';
 
-### PHP Setup
+        $this->dumper->dump(
+            $this->cloner->cloneVar($variable),
+            function ($line, $depth) use (&$output) {
+                // A negative depth means "end of dump"
+                if ($depth >= 0) {
+                    // Adds a two spaces indentation to the line
+                    $output .= str_repeat('  ', $depth).$line."\n";
+                }
+            }
+        );
 
-Let's define our `composer.json` for the app:
-
-```json
-{
-    "require": {
-        "spiral/roadrunner": "^1.9",
-        "composer/package-versions-deprecated": "1.11.99.1",
-        "spiral/php-grpc": "^1.4",
-        "grpc/grpc": "^1.34"
-    },
-    "autoload": {
-        "psr-4": {
-            "App\\": "app",
-            "Khepin\\SimpleCache\\": "php-client/src/Khepin/SimpleCache"
-        }
+        return $output;
     }
 }
-
 ```
 
-We need the protobuf and gRPC extensions enabled for PHP, so we'll use the base PHP image and a custom Dockerfile again. We add the following service to `docker-compose.yaml`
-
-```yaml
-  # ...
-  simplecache:
-    image: php:7.4-cli
-    build:
-      dockerfile: Dockerfile-app
-      context: .
-    working_dir: /var/www
-    ports:
-      - 9090:9090
-    volumes:
-      - .:/var/www
-```
-
-The dockerfile will be:
-
-```Dockerfile
-# Dockerfile-app
-FROM php:7.4-cli
-
-# Extensions
-RUN echo starting && \
-    docker-php-ext-enable grpc && \
-    docker-php-ext-enable protobuf
-```
-
-We can now install our PHP dependencies and generate our autoloader with `docker-compose run simplecache composer install`
-
-### PHP Service
-
-Our service implementation is fairly straightforward, the service is instantiated with an empty array property and will store, serve and remove values as requested.
-
-⚠️ This is definitely not meant to be used "for real", there's no checks around how much memory is used, whether they keys / values are valid, should be stored or ignored, there's no shared memory between the workers, so you don't have 1 but multiple independent caches etc...
+The next step is to add a `dump()` function. This function does 2 things: gather the dumped data and send it to our yet to come Go debugging server. Every intermediate level / function you add will change the shape of your stacktrace and therefore how you're retrieving some of the information. So be careful if you're about to embark on refactoring this code.
 
 ```php
-<?php declare(strict_types=1);
-
-namespace App\GRPC;
-
-use Khepin\SimpleCache\DelRequest;
-use Khepin\SimpleCache\DelResponse;
-use Khepin\SimpleCache\GetRequest;
-use Khepin\SimpleCache\GetResponse;
-use Khepin\SimpleCache\SetRequest;
-use Khepin\SimpleCache\SetResponse;
-use Khepin\SimpleCache\SimpleCacheInterface;
-use Spiral\GRPC\ContextInterface;
-use Spiral\GRPC\Exception\NotFoundException;
-
-class SimpleCacheService implements SimpleCacheInterface
+public function dump($variable) : string
 {
-    protected $storage = [];
+    // Get the backtrace and the information we care about from it.
+    $bt = debug_backtrace();
+    // We expect not to be called directly but to have been called from the `rrdump` function
+    // if we were called directly, this `1` would be `0` etc...
+    $file = $bt[1]['file'];
+    $line = $bt[1]['line'];
+    $funcOrMethod = $bt[2]['function'];
+    $args = $bt[2]['args'];
 
-    public function Set(ContextInterface $ctx, SetRequest $in): SetResponse
+    // our response data containing all the elements we care about
+    $result = json_encode([
+        'stacktrace' => $this->getDumpString($bt),
+        'file' => $file,
+        'line' => $line,
+        'func' => $funcOrMethod,
+        'args' => $this->getDumpString($args),
+        'dump' => $this->getDumpString($variable),
+        'epochms' => (int) (microtime(true) *1000)
+    ]);
+
+    // Sending our info to the roadrunner service
+    return $this->rpc->call("debugger.SendDebugInfo", $result);
+}
+```
+
+So here our code relies on `$this->rpc` which we'll cover in just a bit and calls the `debugger` service's `SendDebugInfo` method our json encoded result. Let's tie things together: in the end our `RRDumper` class looks like this:
+
+```php
+class RRDumper
+{
+    protected static RRDumper $instance;
+
+    protected RPC $rpc;
+
+    protected VarCloner $cloner;
+
+    protected HtmlDumper $dumper;
+
+    public static function i()
     {
-        $this->storage[$in->getKey()] = $in->getValue();
-        return new SetResponse(['OK' => true]);
+        return self::$instance;
     }
 
-    public function Del(ContextInterface $ctx, DelRequest $in): DelResponse
+    public static function setupInstance(RPC $rpc)
     {
-        unset($this->storage[$in->getKey()]);
-        return new DelResponse(['OK' => true]);
+        self::$instance = new self;
+        self::$instance->rpc = $rpc;
+        self::$instance->cloner = new VarCloner();
+        self::$instance->dumper = new HtmlDumper();
     }
 
-    public function Get(ContextInterface $ctx, GetRequest $in): GetResponse
+    public function dump($variable) : string
     {
-        if (!array_key_exists($in->getKey(), $this->storage)) {
-            throw new NotFoundException();
-        }
+        // Get the backtrace and the information we care about from it.
+        $bt = debug_backtrace();
+        // We expect not to be called directly but to have been called from the `rrdump` function
+        // if we were called directly, this `1` would be `0` etc...
+        $file = $bt[1]['file'];
+        $line = $bt[1]['line'];
+        $funcOrMethod = $bt[2]['function'];
+        $args = $bt[2]['args'];
 
-        return new GetResponse([
-            'Key' => $in->getKey(),
-            'Value' => $this->storage[$in->getKey()] ?? null,
+        // our response data containing all the elements we care about
+        $result = json_encode([
+            'stacktrace' => $this->getDumpString($bt),
+            'file' => $file,
+            'line' => $line,
+            'func' => $funcOrMethod,
+            'args' => $this->getDumpString($args),
+            'dump' => $this->getDumpString($variable),
+            'epochms' => (int) (microtime(true) *1000)
         ]);
+
+        // Sending our info to the roadrunner service
+        return $this->rpc->call("debugger.SendDebugInfo", $result);
+    }
+
+    public function getDumpString($variable) : string
+    {
+        $output = '';
+
+        $this->dumper->dump(
+            $this->cloner->cloneVar($variable),
+            function ($line, $depth) use (&$output) {
+                // A negative depth means "end of dump"
+                if ($depth >= 0) {
+                    // Adds a two spaces indentation to the line
+                    $output .= str_repeat('  ', $depth).$line."\n";
+                }
+            }
+        );
+
+        return $output;
     }
 }
 ```
 
-Each method follows the definition from the interface, itself derived from the protobuf service definition. It takes in the given request type and returns the correct response type.
-The first argument is always a `Context` which can be used to set and retrieve additional data from the request for example. It's used to read request headers / metadata. It's also used to add
-response headers / metadata.
+And we create the `rrdump` function with:
+```php
+$relay = new Spiral\Goridge\SocketRelay("127.0.0.1", 6001);
+$rpc = new Spiral\Goridge\RPC($relay);
 
-The `NotFoundException` is provided by the `Spiral\Grpc` framework and will result in a gRPC NotFound code being returned to the client.
+RRDumper::setupInstance($rpc);
 
-### The gRPC worker
+function rrdump($variable) : string {
+    return RRDumper::i()->dump($variable);
+}
+```
 
-We said earlier that RoadRunner manages php workers. Let's define our PHP worker for this gRPC service:
+This means we'll be communicating our debug info over a localhost socket on port 6001.
+
+With this done, we can now call `rrdump` in our code. For example in our cache service:
 
 ```php
-<?php declare(strict_types=1);
-//worker.grpc.php
-
-use App\GRPC\SimpleCacheService;
-use Khepin\SimpleCache\SimpleCacheInterface;
-use Spiral\Goridge\StreamRelay;
-use Spiral\RoadRunner\Worker;
-
-ini_set('display_errors', 'stderr'); // error_log will be reflected properly in roadrunner logs
-require "vendor/autoload.php";
-
-//To run server in debug mode - new \Spiral\GRPC\Server(null, ['debug' => true]);
-$server = new \Spiral\GRPC\Server();
-
-// Register our cache service
-$server->registerService(SimpleCacheInterface::class, new SimpleCacheService());
-
-// RoadRunner to PHP communication will happen over stdin and stdout pipes
-$relay = new StreamRelay(STDIN, STDOUT);
-$w = new Worker($relay);
-$server->serve($w);
+public function Set(ContextInterface $ctx, SetRequest $in): SetResponse
+{
+    rrdump([
+        'request' => json_decode($in->serializeToJsonString())
+    ]);
+    $this->storage[$in->getKey()] = $in->getValue();
+    return new SetResponse(['OK' => true]);
+}
 ```
 
-### Building the app server
+The protobuf `SetRequest` class only has `private` properties which is why we're doing the encoding / decoding json here so we can actually have a dump result with visible information.
 
-To run RoadRunner gRPC, you can either download a pre-built binary from https://github.com/spiral/php-grpc/releases or build it. We'll be building our own for 2 reasons:
+For now that code lives in my `worker.grpc.php`.
 
-- The latest version tagged in the repo: 1.4.2, doesn't have the pre-built binaries
-- Building your own allows you to create Go code that can be called directly from PHP which we might explore later on
+## The Go service
 
-First off, let's create a directory for our appserver code: `mkdir appserver`
+Our Go service will take 2 configuration values:
+- The size of the history of `dump` values it should keep in memory
+- The address on which it should server our debugger's UI
 
-The appserver (and roadrunner) are built in Go. You might not have Go installed on your machine. In this case, we can use the `proto` container we defined earlier since it's using the base Go image.
+Those values will be added in our `.rr.yaml` config file as follows:
 
-We need to run this one time to initialize the appserver go module.
+```yaml
+debugger:
+  HistorySize: 2000
+  address: :8089
+```
+In this case we'll be serving on port 8089 and will keep a maximum of 2,000 debug messages.
 
-```bash
-# exec into the proto container
-docker-compose run proto bash
-# navigate to appserver directory
-cd appserver
-# Create a go module for our app server (change `khepin` for your own username)
-go mod init github.com/khepin/rr-appserver
-touch main.go
+### Getting the config
+
+We'll start with just enough in the plugin to retrieve those config values. We'll create our plugin in `appserver/plugins/debugger`. There we create our `debugger.go`:
+
+```go
+package debugger
+
+import (
+	"github.com/davecgh/go-spew/spew"
+	"github.com/spiral/roadrunner/service"
+	"github.com/spiral/roadrunner/service/rpc"
+)
+
+const ID = "debugger"
+
+type Service struct {
+	Config *Config
+}
+
+func (s *Service) Init(r *rpc.Service, cfg *Config) (ok bool, err error) {
+	s.Config = cfg
+	spew.Dump(cfg)
+
+	return true, nil
+}
+
+type Config struct {
+	HistorySize uint
+	Address     string
+}
+
+func (c *Config) Hydrate(cfg service.Config) error {
+	return cfg.Unmarshal(&c)
+}
 ```
 
-We can then update `main.go` with the following content:
+We've created a `Service` type which takes the rpc service and the config as `Init` arguments. The rpc service will be used later. The config is the type we defined in this same package with the 2 `HistorySize` and `Address` fields defined in our config earlier.
+
+We've also set an `ID` constant with the name `debugger`. This needs to match the top level name we used in our config.
+
+With this we can register our service in our `appserver/main.go` file:
 
 ```go
 package main
 
 import (
-	grpc "github.com/spiral/php-grpc"
-	rr "github.com/spiral/roadrunner/cmd/rr/cmd"
-	"github.com/spiral/roadrunner/service/limit"
-	"github.com/spiral/roadrunner/service/metrics"
-	"github.com/spiral/roadrunner/service/rpc"
-
-	// grpc specific commands
-	_ "github.com/spiral/php-grpc/cmd/rr-grpc/grpc"
+	// ... previous imports
+	"github.com/khepin/rr-appserver/plugins/debugger"
 )
 
 func main() {
@@ -399,364 +272,303 @@ func main() {
 	rr.Container.Register(metrics.ID, &metrics.Service{})
 	rr.Container.Register(limit.ID, &limit.Service{})
 
+	// Custom services
+	// --------------------------------------------
+	rr.Container.Register(debugger.ID, &debugger.Service{})
+
 	rr.Execute()
 }
 ```
 
-The build instructions are added to our `Makefile`:
+If we start our server now with docker-compose, we'll see the following output in the logs:
 
-```Makefile
-# easy to remember rule name
-build-appserver-server: appserver/appserver
-# actual rule with dependencies on any `go` file within `appserver/*` being updated
-appserver/appserver: $(wildcard appserver/**/*.go) $(wildcard appserver/*.go)
-	docker-compose run proto make appserver_from_within_container
-appserver_from_within_container:
-	cd appserver && go build -o appserver
 ```
+simplecache_1  | (*debugger.Config)(0xc000289580)({
+simplecache_1  |  HistorySize: (uint) 2000,
+simplecache_1  |  Address: (string) (len=5) ":8089"
+simplecache_1  | })
+```
+Meaning our config has correctly been parsed and given to our service.
 
-Now `make build-appserver-server` will out put `appserver/appserver`.
+### Simple RPC
 
-### Running our gRPC service
+We'll start with an RPC method that just logs a message when it receives data from our PHP code to verify that the communication is working properly:
 
-We create a `.rr.yaml` config file to define how roadrunner should run the service:
+First make sure to have the `rpc` enabled in `.rr.yaml`:
 
 ```yaml
-# Enable RoadRunner's rpc. Used for restarting the workers in our case
 rpc:
   enable: true
   listen: tcp://127.0.0.1:6001
-
-# gRPC params
-grpc:
-  listen: "tcp://:9090" # gRPC is enabled on port 9090
-  proto: "simplecache.proto"
-  workers:
-    command: "php worker.grpc.php"
-    pool:
-      numWorkers: 1 # Since we have a cache that's based on an instance variable, we can only have 1 worker for this sample scenario
 ```
 
-We can now update `docker-compose.yaml` to run RoadRunner and our server
-
-```yaml
-version: '2'
-
-services:
-  simplecache:
-    # ...
-    command: ./appserver/appserver serve -v -d
-```
-
-Now when we call `docker-compose up` we should see roadrunner starting and giving us the following output:
-
-```
-simplecache_1  | DEBU[0000] [metrics]: disabled
-simplecache_1  | DEBU[0000] [rpc]: started
-simplecache_1  | DEBU[0000] [grpc]: started
-```
-
-### A PHP Client
-
-To try it, we need to be able to make a gRPC request. We'll create a simple PHP client to test that things are working properly:
-
-`testclient.php`
-```php
-use Khepin\SimpleCache\SimpleCacheClient;
-
-require "vendor/autoload.php";
-
-use Grpc\ChannelCredentials;
-use Khepin\SimpleCache\DelRequest;
-use Khepin\SimpleCache\GetRequest;
-use Khepin\SimpleCache\SetRequest;
-use Spiral\GRPC\StatusCode;
-
-$client = new SimpleCacheClient(
-    'localhost:9090',
-    [
-        'credentials' => ChannelCredentials::createInsecure(),
-    ]
-);
-
-[$response, $status] = $client->Set(new SetRequest(['Key' => 'hello', 'Value' => 'world']))->wait();
-echo "================== SET ==================\n";
-echo $response->getOK() === true, "\n";
-
-[$response, $status] = $client->Get(new GetRequest(['Key' => 'hello']))->wait();
-echo "================== GET ==================\n";
-echo $response->getKey(), " : ", $response->getValue(), "\n";
-
-[$response, $status] = $client->Del(new DelRequest(['Key' => 'hello']))->wait();
-echo "================== DEL ==================\n";
-echo $response->getOK() === true, "\n";
-
-[$response, $status] = $client->Get(new GetRequest(['Key' => 'hello']))->wait();
-echo "================== GET ==================\n";
-echo $status->code === StatusCode::NOT_FOUND, "\n";
-```
-
-You can now exec into the app container to run the client code:
-
-```bash
-$ docker-compose exec simplecache bash
-root@9db54706$ php testclient.php
-```
-
-Which should give the following output:
-
-```
-================== SET ==================
-1
-================== GET ==================
-hello : world
-================== DEL ==================
-1
-================== GET ==================
-1
-```
-
-## gRPC Gateway
-
-The gRPC ecosystem has created gRPC Gateway as a way to use gRPC / protobuf APIs over HTTP / json. To set it up, we need to:
-
-- generate the Go gRPC code
-- create a gateway server (in Go)
-- Point it to the remote gRPC server
-
-This could be done as a separate server or within our appserver by listening on a separate port. Here we'll show how to create it as a separate service. All the code for the gateway will go in `mkdir gateway`. Then similar to how we created the appserver module earlier, we'll create a module for the gateway:
-
-`go mod init github.com/khepin/simplecache/gateway`.
-
-And we'll add similar build targets in the `Makefile`:
-
-```Makefile
-build-gateway-server: gateway/gateway
-gateway/gateway: $(wildcard gateway/**/*.go) $(wildcard gateway/*.go)
-	docker-compose run proto make gateway_from_within_container
-gateway_from_within_container:
-	cd gateway && go build -o gateway
-```
-
-Before we can write the gateway code, we need to generate the Golang protobuf code.
-
-### Golang Protobuf Generation
-
-In our `Dockerfile-proto`, we'll add the required `Go` dependencies:
-
-`Dockerfile-proto`
-```Dockerfile
-#...
-
-ARG GOLANG_GRPC_VERSION=1.4.3
-
-#...
-
-# grpc Go
-RUN mkdir -p /mock-go-module
-RUN cd /mock-go-module \
-    && go mod init mockmodule \
-    && go get github.com/golang/protobuf/protoc-gen-go@v${GOLANG_GRPC_VERSION} \
-    && go get -u github.com/golang/protobuf/protoc-gen-go
-# grpc-gateway
-RUN cd /mock-go-module \
-    && go get -u github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway \
-    && go get -u github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger
-
-RUN cd /protobuf \
-    && rm -rf /mock-go-module
-```
-
-The proto definition also needs to be updated with the name of the go package to generate code for:
-
-```proto
-option go_package="github.com/khepin/simplecache/gateway/protos";
-```
-
-With this in place we can update the `Makefile` to build the Go output
-
-```Makefile
-proto_from_within_container:
-	# PHP
-    # ...
-	# Go (used to generate the Go Client, but also for grpc-gateway)
-	mkdir -p /var/www/gateway/protos
-	mkdir -p /var/www/swagger
-	protoc /var/www/simplecache.proto \
-		--proto_path /var/www \
-		--go_out=paths=source_relative,plugins=grpc:./gateway/protos \
-		-I/go/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0/third_party/googleapis/ \
-		--swagger_out=logtostderr=true:./swagger \
-		--grpc-gateway_out=logtostderr=true:gateway/protos
-```
-
-When running `make proto`, we now get generated go code at `gateway/protos/simplecache.pb.go`. We're sill missing the gateway definition. This is because it needs to be first configured properly in the proto service definition. Eg: which method maps to an HTTP POST or DELETE or GET, how does the proto request map to the json body and query string params etc...
-
-### Gateway definition
-
-Our proto definition becomes:
-
-```proto
-// ...
-
-import "google/api/annotations.proto";
-
-// ...
-
-service SimpleCache {
-    rpc Set(SetRequest) returns (SetResponse) {
-        option (google.api.http) = {
-            post: "/v1/set",
-            body: "*"
-        };
-    };
-    rpc Del(DelRequest) returns (DelResponse) {
-        option (google.api.http) = {
-            post: "/v1/del",
-            body: "*"
-        };
-    };
-    rpc Get(GetRequest) returns (GetResponse) {
-        option (google.api.http) = {
-            post: "/v1/get",
-            body: "*"
-        };
-    };
-}
-```
-
-Since I don't want to dive too much into how things are mapped between the HTTP request body vs query string parameters, I've kept everything as a POST where the Request object represents the entire HTTP body. This is not your only option though and if your goal is not to simply expose your RPC service over HTTP but to define an actual REST interface making good use of the right HTTP verbs in the right place, that is possible and I encourage you to look into https://grpc-ecosystem.github.io/grpc-gateway/ for more information.
-
-We again update our build command in the Makefile:
-
-```Makefile
-proto_from_within_container:
-	# PHP
-	protoc /var/www/simplecache.proto \
-		--php_oËout=/var/www/php-client/src \
-		$(: ...) \
-		-I=/go/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0/third_party/googleapis/ \
-		$(: ...)
-	# Go (used to generate the Go Client, but also for grpc-gateway)
-	mkdir -p /var/www/gateway/protos
-	mkdir -p /var/www/swagger
-	protoc /var/www/simplecache.proto \
-		--proto_path /var/www \
-		--go_out=paths=source_relative,plugins=grpc:./gateway/protos \
-		-I=/go/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0/third_party/googleapis/ \
-		--swagger_out=logtostderr=true:./swagger \
-		--grpc-gateway_out=logtostderr=true:gateway/protos
-	mv gateway/protos/github.com/khepin/simplecache/protos/simplecache.pb.gw.go gateway/protos/simplecache.pb.gw.go
-	rm -rf gateway/protos/github.com
-```
-
-With this in place, we've generated a swagger definition for our API: `swagger/simplecache.swagger.json` and can start creating the gateway server. Here's the Go code for that:
+We'll now create the `rpcService` aspect of our `Service`. We're chosing to build all the RPC service related functionality on a separate type:
 
 ```go
-package main
+type rpcService struct {}
 
-import (
-	"context"
-	"net/http"
+func (ps *rpcService) SendDebugInfo(input string, output *string) error {
+	*output = "OK"
+	fmt.Println("received debug info")
+	return nil
+}
+```
+We can now register this `rpcService` on the `rpc` object provided in our `Init` method:
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
-	"github.com/khepin/simplecache/gateway/protos"
-	"github.com/sirupsen/logrus"
-	"google.golang.org/grpc"
-)
+```go
+func (s *Service) Init(r *rpc.Service, cfg *Config) (ok bool, err error) {
+	s.Config = cfg
 
-func main() {
-	ctx := context.Background()
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	r.Register("debugger", &rpcService{})
 
-	mux := runtime.NewServeMux()
-	opts := []grpc.DialOption{grpc.WithInsecure()}
-	err := protos.RegisterSimpleCacheHandlerFromEndpoint(ctx, mux, "simplecache:9090", opts)
-	if err != nil {
-		logrus.Fatal(err)
-	}
-	logrus.Info("endpoint created")
-
-	logrus.Info("listening")
-	err = http.ListenAndServe(":8080", mux)
-	if err != nil {
-		logrus.Fatal(err)
-	}
+	return true, nil
 }
 ```
 
-And in `docker-compose.yaml` we add the gateway service:
+If we restart our server, every time we send a `Set` request to our cache, in the log output of `docker-compose`, we'll see a line saying: `received debug info` corresponding to our call to `rrdump`.
 
-```yaml
-  gateway:
-    image: golang:latest
-    command: ./gateway
-    working_dir: /var/www
-    volumes:
-      - ./gateway:/var/www
-    ports:
-      - 8080:8080
+### Storing debug logs
+
+A great way to store a limited quantity of information (2000 items in our case) and override the oldest item with the newest one whenever we're already at capacity is the use of a Ring Buffer (https://en.wikipedia.org/wiki/Circular_buffer).
+
+Go comes with a set of tools to make this relatively easy (see: https://golang.org/pkg/container/ring/).
+
+So let's initialize our roadrunner service with a ring buffer sized accordingly with our configuration:
+
+Our `Service` type is updating to store the ring buffer:
+
+```go
+type Service struct {
+	Config *Config
+	Buffer *ring.Ring
+}
 ```
 
-Before we can run our HTTP test, we still need to request the http protobuf definitions for PHP: `composer require google/common-protos`
+And we'll intialize it in our `Init()` method:
 
-We can now access our API via HTTP on localhost:8080. For example:
+```go
+func (s *Service) Init(r *rpc.Service, cfg *Config) (ok bool, err error) {
+	s.Config = cfg
+	s.Buffer = ring.New(int(cfg.HistorySize))
 
-Set:
-```
-curl --request POST \
-  --url http://localhost:8080/v1/set \
-  --data '{"Key": "hello","Value": "world"}'
-```
+	r.Register("debugger", &rpcService{Service: s})
 
-Get:
-```
-curl --request POST \
-  --url http://localhost:8080/v1/get \
-  --data '{"Key": "hello"}'
+	return true, nil
+}
 ```
 
-## Auto-Reloading
+Now when we receive a new call to `SendDebugInfo` we'll append the info to the buffer. Though in our case we'll prepend it so that when we output the entire ring, it's sorted newest to oldest. Our updated `rpcService` is as follows:
 
-With all this built, we're missing something key to PHP. When you change a PHP file, you can just go to your browser, hit refresh and see the new code running. This isn't the case here, you might have to rebuild many things when you change appserver code or gateway code or PHP code.
+```go
+type rpcService struct {
+	Service *Service
+}
 
-To regain PHP's ease here, we'll make use of `watchexec` (see: https://github.com/watchexec/watchexec) and a couple Makefile rules. Here's what I use:
+func (ps *rpcService) SendDebugInfo(input string, output *string) error {
+	*output = "OK"
+	v := map[string]interface{}{}
+	json.Unmarshal([]byte(input), &v)
+	ps.Service.Buffer.Value = v
+	ps.Service.Buffer = ps.Service.Buffer.Prev()
+	return nil
+}
+```
+We decode the received json in a generic map. Set it as the current value of our buffer then move the buffer to point to the previous element.
 
-```Makefile
-###########################################################
-# Watchers
-###########################################################
-run: build-gateway-server build-appserver-server
-	docker-compose up -d --force-recreate
+### Serving debug info over HTTP
 
-watch: run
-	make watch-php &
-	make watch-gateway &
-	make watch-appserver
+Next we'll server our accumulated debug logs over HTTP so we can later build a web UI to use that API. We'll be using the `echo` web framework as it provides a convenient way to define our routes and handlers while staying fairly minimal.
 
-watch-php:
-	watchexec -w app -- make reset
-watch-gateway:
-	watchexec -w gateway -i gateway/gateway -- make rerun-gateway-server
-watch-appserver:
-	watchexec -w appserver -i appserver/appserver -- make rerun-appserver-server
+Roadrunner can take special care of Services that will be creating their own servers like this and properly `Start` and `Stop` them at the appropriate time in its lifecycle. For this we'll provide the `Serve` and `Stop` methods on our service.
 
-rerun-gateway-server: build-gateway-server
-	docker-compose up -d --force-recreate gateway
-rerun-appserver-server: build-appserver-server
-	docker-compose up -d --force-recreate simplecache
+```go
+type Service struct {
+	Config *Config
+	Buffer *ring.Ring
+	echo   *echo.Echo
+}
 
-reset:
-	docker-compose exec -T simplecache ./appserver/appserver grpc:reset
+func (s *Service) Init(r *rpc.Service, cfg *Config) (ok bool, err error) {
+	s.Config = cfg
+	s.Buffer = ring.New(int(cfg.HistorySize))
+
+	r.Register("debugger", &rpcService{Service: s})
+
+	s.prepareHttp()
+
+	return true, nil
+}
+```
+We now configure our service with an instance of `echo.Echo`. Most of that setup is done in the `prepareHttp` method:
+
+```go
+func (s *Service) prepareHttp() {
+	e := echo.New()
+
+	e.GET("/debuglogs", func(c echo.Context) error {
+		out := []map[string]interface{}{}
+		s.Buffer.Do(func(item interface{}) {
+			s, ok := item.(map[string]interface{})
+			if !ok {
+				return
+			}
+			out = append(out, s)
+		})
+
+		return c.JSON(http.StatusOK, out)
+	})
+
+	s.echo = e
+}
+```
+We will respond to the `http://localhost:8089/debuglogs` endpoint. And here we build our return value by walking over the ring buffer and only adding to our output elements of the ring buffer that were actually maps (our decoded debug information).
+
+We've defined our routing here and now only need to let roadrunner properly start and stop the server:
+
+```go
+func (s *Service) Serve() error {
+	fmt.Println("starting http server")
+	return s.echo.Start(s.Config.Address)
+}
+
+func (s *Service) Stop() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s.Buffer = ring.New(int(s.Config.HistorySize))
+	s.echo.Shutdown(ctx)
+}
+```
+On `Serve` all we have to do is call `echo.Start` with the configured address. On `Stop`, we give echo up to 10 seconds to properly shutdown and also reset the ring buffer to a new, empty one.
+
+With all this in place, if we restart everything and call our gRPC `Set` method, which in turn calls `rrdump`, we should be able to use our browser to go to `http://localhost:8089/debuglogs` and retrieve a list of debug objects.
+
+## A UI for our debug logs
+
+To tie everything together, we'll create a minimal `vue.js` app to display our logs. Our vue code will live in `appserver/plugins/debugger/frontend` and the built version will live in `appserver/plugins/debugger/assets`.
+
+We'll also look into embedding those built JS files directly in our go binary so they can be served easily from there. Our main component, `App.vue` will have the title, make a request to our server to retrieve our debug information and create one `Dump` component per entry in our debug logs.
+
+```vue
+<template>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>RoadRunner Debugger</title>
+    </head>
+    <body>
+        <h1>RR gRPC Debugger</h1>
+        <div v-for="(log, id) in debuglogs" :key=id>
+            <Dump :value=log></Dump>
+        </div>
+    </body>
+    </html>
+</template>
+
+<script>
+import Dump from './Dump.vue';
+
+export default {
+    data() {
+        return {
+            "debuglogs": [],
+        }
+    },
+	components: {
+		Dump
+    },
+    created() {
+        this.fetch()
+    },
+    methods: {
+        fetch() {
+            fetch("http://localhost:8089/debuglogs").then((v) => v.json().then((d) => this.debuglogs = d))
+        },
+    }
+}
+</script>
 ```
 
-With this in place, updating any file in your codebase should rebuild or restart the required services, making sure you're always running up to date code with your latest changes.
+The `Dump.vue` component displays the information from a single dump and allows to toggle on / off the longer sections like the arguments and the stack trace:
 
-## OMG What have we done?
+```vue
+<template>
+    <div class="dump">
+        <h2>{{value.file}}:{{value.line}}::{{value.func}}()</h2>
+        <div v-html=value.dump></div>
+        <h3 @click="displayArgs" class="arg-switch">args <small>({{this.display.args ? 'hide' : 'show'}})</small></h3>
+        <div v-html=value.args v-if=display.args></div>
+        <h3 @click="displayStacktrace" class="arg-switch">stacktrace <small>({{this.display.stacktrace ? 'hide' : 'show'}})</small></h3>
+        <div v-html=value.stacktrace v-if=display.stacktrace></div>
+    </div>
+</template>
 
-This should give you a headstart in your explorations of making gRPC servers in PHP. Here are some things I plan to keep exploring / write about on this topic:
+<script>
+export default {
+    data() {
+        return {
+            "display": {
+                "args": false,
+                "stacktrace": false,
+            },
+        }
+    },
+    props: ["value"],
+    methods: {
+        displayArgs() {
+            this.display.args = !this.display.args;
+        },
+        displayStacktrace() {
+            this.display.stacktrace = !this.display.stacktrace;
+        }
+    }
+}
+</script>
 
-- using headers (request & response) for metadata
-- handling errors
-- building Go services to use from PHP
+<style>
+.dump {
+    background-color: #D6EDFF;
+    border-radius: 6px;
+    border-color: #8B95C9;
+    border-style: solid;
+    border-width: 2px;
+    padding: 15px;
+    margin-bottom: 20px;
+}
+
+.arg-switch {
+    cursor: pointer;
+}
+
+.arg-switch small {
+    text-decoration: underline;
+}
+</style>
+```
+
+By calling `vue build`, we get a set of javascript, html and CSS files in a `dist` folder that are ready to be served. We simply move that content over to `assets` after the build is done.
+
+### Embedding the built JS
+
+We use `pkger` to embed the built frontend assets in our go binary. From within the `appserver` directory, run `pkger -include /plugins/debugger/assets`. This will create a `pkged.go` file next to `main.go`. That file contains the byte data for the files that were in the `assets` folder.
+
+In `debugger.go`, we can serve those static files by updating our `prepareHttp` method with the following:
+
+```go
+func (s *Service) prepareHttp() {
+	e := echo.New()
+
+	// Static files
+	e.GET("/", echo.WrapHandler(http.FileServer(pkger.Dir("/plugins/debugger/assets"))))
+	e.GET("/index.html", echo.WrapHandler(http.FileServer(pkger.Dir("/plugins/debugger/assets"))))
+	e.GET("/css/*", echo.WrapHandler(http.FileServer(pkger.Dir("/plugins/debugger/assets"))))
+    e.GET("/js/*", echo.WrapHandler(http.FileServer(pkger.Dir("/plugins/debugger/assets"))))
+```
+
+Now if we build all our services, call the gRPC `Set` method of our cache which calls `rrdump`, we should be able to view our debug UI and open / close the args and stacktrace:
+
+## Conclusion thingy
+
+We've built a go plugin for roadrunner that can be called directly from PHP. We've also seen how to create a roadrunner plugin that's a server on its own.
+
+Since last time I've also updated the tools I use to watch and rebuild things. I was having too many issues running multiple `watchexec` processes in parallel so I created https://github.com/khepin/watchspatch instead and that has been working great.

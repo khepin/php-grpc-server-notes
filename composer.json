@@ -4,7 +4,8 @@
         "composer/package-versions-deprecated": "1.11.99.1",
         "spiral/php-grpc": "^1.4",
         "grpc/grpc": "^1.34",
-        "google/common-protos": "^1.3"
+        "google/common-protos": "^1.3",
+        "symfony/var-dumper": "^5.2"
     },
     "autoload": {
         "psr-4": {

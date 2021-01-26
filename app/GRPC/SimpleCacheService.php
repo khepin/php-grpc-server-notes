@@ -18,6 +18,9 @@ class SimpleCacheService implements SimpleCacheInterface
 
     public function Set(ContextInterface $ctx, SetRequest $in): SetResponse
     {
+        rrdump([
+            'request' => json_decode($in->serializeToJsonString())
+        ]);
         $this->storage[$in->getKey()] = $in->getValue();
         return new SetResponse(['OK' => true]);
     }

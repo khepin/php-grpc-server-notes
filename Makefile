@@ -30,46 +30,27 @@ proto:
 	docker-compose run proto make proto_from_within_container
 
 ###########################################################
-# Go builds
-###########################################################
-build-appserver-server: appserver/appserver
-appserver/appserver: $(wildcard appserver/**/*.go) $(wildcard appserver/*.go)
-	docker-compose run proto make appserver_from_within_container
-appserver_from_within_container:
-	# using `-o appserver` is broken after setting it as a `.gitignore` target
-	cd appserver && go build -o appserver-server
-	mv appserver/appserver-server appserver/appserver
-
-build-gateway-server: gateway/gateway
-gateway/gateway: $(wildcard gateway/**/*.go) $(wildcard gateway/*.go)
-	docker-compose run proto make gateway_from_within_container
-gateway_from_within_container:
-	# using `-o gateway` is broken after setting it as a `.gitignore` target
-	cd gateway && go build -o gateway-server
-	mv gateway/gateway-server gateway/gateway
-
-###########################################################
 # Watchers
 ###########################################################
-run: build-gateway-server build-appserver-server
+run:
+	cd appserver; make build
+	cd gateway; make build
 	docker-compose up -d --force-recreate
 
 watch: run
-	make watch-php &
-	make watch-gateway &
-	make watch-appserver
+	watchspatch
 
-watch-php:
-	watchexec -w app -- make reset
-watch-gateway:
-	watchexec -w gateway -i gateway/gateway -- make rerun-gateway-server
-watch-appserver:
-	watchexec -w appserver -i appserver/appserver -- make rerun-appserver-server
-
-rerun-gateway-server: build-gateway-server
-	docker-compose up -d --force-recreate gateway
-rerun-appserver-server: build-appserver-server
+appserver.rerun:
 	docker-compose up -d --force-recreate simplecache
+	sleep 2
+	curl --request POST --url http://localhost:8080/v1/set --header 'user-agent: vscode-restclient' --data '{"Key": "hello","Value": "world"}'
+gateway.rerun:
+	docker-compose up -d --force-recreate gateway
 
-reset:
-	docker-compose exec -T simplecache ./appserver/appserver grpc:reset
+reset-php:
+	docker-compose exec simplecache ./appserver/appserver grpc:reset
+
+vue:
+	cd appserver/plugins/debugger/frontend; vue build
+	rm -rf appserver/plugins/debugger/assets
+	mv appserver/plugins/debugger/frontend/dist appserver/plugins/debugger/assets

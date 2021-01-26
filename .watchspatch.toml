@@ -1,0 +1,23 @@
+version=1
+
+debounce="200ms"
+
+[patterns]
+# PHP files should reset the grpc workers
+"app/**/*.php"={cmd ="make reset-php", debounce="1s"}
+"app/*.php"={cmd ="make reset-php", debounce="1s"}
+"*.php"={cmd ="make reset-php", debounce="1s"}
+# Gateway server
+"gateway/*.go"={cmd ="cd gateway; make build"}
+"gateway/**/*.go"={cmd ="cd gateway; make build"}
+"gateway/gateway"={cmd ="make gateway.rerun", debounce="2s"}
+# RR Appserver
+"appserver/*.go"={cmd ="cd appserver; make build"}
+"appserver/**/*.go"={cmd ="cd appserver; make build"}
+"appserver/appserver"={cmd ="make appserver.rerun", debounce="2s"}
+".rr.yaml"={cmd ="make appserver.rerun", debounce="2s"}
+# Protobufs
+"simplecache.proto"={cmd="make proto"}
+# Vue App
+"appserver/plugins/debugger/frontend/*.vue"={cmd="make vue", debounce="1s"}
+"appserver/plugins/debugger/assets/js/*.js"={cmd="cd appserver; make assets", debounce="2s"}

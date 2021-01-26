@@ -8,6 +8,9 @@ services:
     working_dir: /var/www
     volumes:
       - .:/var/www
+    # Running this allows to keep the container around and re-use it for multiple compilations without
+    # re-downloading all go vendor dependency modules
+    command: tail -f Makefile -n 0
   simplecache:
     image: php:7.4-cli
     build:
@@ -16,6 +19,7 @@ services:
     working_dir: /var/www
     ports:
       - 9090:9090
+      - 8089:8089
     volumes:
       - .:/var/www
     command: ./appserver/appserver serve -v -d

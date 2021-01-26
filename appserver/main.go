@@ -9,6 +9,8 @@ import (
 
 	// grpc specific commands
 	_ "github.com/spiral/php-grpc/cmd/rr-grpc/grpc"
+
+	"github.com/khepin/rr-appserver/plugins/debugger"
 )
 
 func main() {
@@ -17,6 +19,10 @@ func main() {
 
 	rr.Container.Register(metrics.ID, &metrics.Service{})
 	rr.Container.Register(limit.ID, &limit.Service{})
+
+	// Custom services
+	// --------------------------------------------
+	rr.Container.Register(debugger.ID, &debugger.Service{})
 
 	rr.Execute()
 }

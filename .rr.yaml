@@ -11,3 +11,7 @@ grpc:
     command: "php worker.grpc.php"
     pool:
       numWorkers: 1
+
+debugger:
+  HistorySize: 2000
+  address: :8089
