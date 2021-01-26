@@ -759,4 +759,4 @@ This should give you a headstart in your explorations of making gRPC servers in 
 
 - using headers (request & response) for metadata
 - handling errors
-- building Go services to use from PHP
+- building Go services to use from PHP: now published on the `debugger` branch: https://github.com/khepin/php-grpc-server-notes/blob/debugger/README.md
