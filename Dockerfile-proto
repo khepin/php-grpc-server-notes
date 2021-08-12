@@ -15,11 +15,24 @@ RUN cd /protobuf \
 
 # grpc PHP (generate client)
 RUN apt-get install php php-dev php-pear phpunit zlib1g-dev -y
-RUN pecl install grpc-${PHP_GRPC_VERSION}
+
 RUN cd /protobuf && git clone -b v${PHP_GRPC_VERSION} https://github.com/grpc/grpc \
     && cd /protobuf/grpc && git submodule update --init
 RUN apt-get install autoconf libtool automake build-essential -y
 RUN cd /protobuf/grpc && make grpc_php_plugin
+
+# Build and install the gRPC C core library.
+RUN cd /protobuf/grpc \
+    git submodule update --init \
+    make \
+    make install
+
+# Compile the gRPC PHP extension.
+RUN cd /protobuf/grpc/src/php/ext/grpc \
+    phpize \
+    ./configure \
+    make \
+    make install
 
 # RoadRunner's custom PHP gRPC plugin (server interface definition)
 RUN apt-get install -y git
