@@ -596,7 +596,7 @@ proto_from_within_container:
 		--grpc-gateway_out=logtostderr=true:gateway/protos
 ```
 
-When running `make proto`, we now get generated go code at `gateway/protos/simplecache.pb.go`. We're sill missing the gateway definition. This is because it needs to be first configured properly in the proto service definition. Eg: which method maps to an HTTP POST or DELETE or GET, how does the proto request map to the json body and query string params etc...
+When running `make proto`, we now get generated go code at `gateway/protos/simplecache.pb.go`. We're still missing the gateway definition. This is because it needs to be first configured properly in the proto service definition. Eg: which method maps to an HTTP POST or DELETE or GET, how does the proto request map to the json body and query string params etc...
 
 ### Gateway definition
 
