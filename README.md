@@ -260,7 +260,13 @@ The dockerfile will be:
 # Dockerfile-app
 FROM php:7.4-cli
 
-# Extensions
+# Install extensions
+RUN apt-get update
+RUN apt-get install libz-dev
+RUN pecl install grpc
+RUN pecl install protobuf
+
+# Enable extensions
 RUN echo starting && \
     docker-php-ext-enable grpc && \
     docker-php-ext-enable protobuf
