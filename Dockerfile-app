@@ -1,6 +1,10 @@
 FROM php:7.4-cli
 
-# Extensions
+# Enable extensions
 RUN echo starting && \
+    apt-get update && \
+    apt-get install libz-dev && \
+    pecl install grpc && \
+    pecl install protobuf && \
     docker-php-ext-enable grpc && \
     docker-php-ext-enable protobuf
