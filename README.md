@@ -546,8 +546,6 @@ go mod init github.com/khepin/simplecache/gateway
 touch main.go
 ```
 
-<!-- `go mod init github.com/khepin/simplecache/gateway`. -->
-
 And we'll add similar build targets in the `Makefile`:
 
 ```Makefile
