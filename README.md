@@ -276,7 +276,7 @@ RUN echo starting && \
     docker-php-ext-enable protobuf
 ```
 
-We can now install our PHP dependencies and generate our autoloader with `docker-compose run simplecache &&composer install`
+We can now install our PHP dependencies and generate our autoloader with `docker-compose run simplecache && composer install`
 
 ### PHP Service
 
@@ -425,7 +425,7 @@ appserver_from_within_container:
 	cd appserver && go build -o appserver
 ```
 
-Now `make build-appserver-server` will out put `appserver/appserver`.
+Now `make build-appserver-server` will output `appserver/appserver`.
 
 ### Running our gRPC service
 
@@ -674,7 +674,7 @@ proto_from_within_container:
 	rm -rf gateway/protos/github.com
 ```
 
-RUN `make proto` to update the files in the gateway directory
+Run `make proto` to update the files in the gateway directory
 
 With this in place, we've generated a swagger definition for our API: `swagger/simplecache.swagger.json` and can start creating the gateway server. Here's the Go code for that:
 
