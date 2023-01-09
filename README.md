@@ -9,7 +9,7 @@ The code is available at https://github.com/khepin/php-grpc-server-notes
 
 ## How RoadRunner works
 
-The Go RoadRunner server will run a couple of PHP workers. .f you've ever built a message queue consumer in PHP, also called queue workers or jobs sometimes, this is the same thing: a long running PHP process waiting to process messages.
+The Go RoadRunner server will run a couple of PHP workers. If you've ever built a message queue consumer in PHP, also called queue workers or jobs sometimes, this is the same thing: a long running PHP process waiting to process messages.
 
 There are 2 distinctions between RoadRunner workers and the ones you might have already built for queues:
 1. The delivery mechanism.
@@ -268,11 +268,15 @@ RUN pecl install protobuf
 
 # Enable extensions
 RUN echo starting && \
+    apt-get update && \
+    apt-get install libz-dev && \
+    pecl install grpc && \
+    pecl install protobuf && \
     docker-php-ext-enable grpc && \
     docker-php-ext-enable protobuf
 ```
 
-We can now install our PHP dependencies and generate our autoloader with `docker-compose run simplecache composer install`
+We can now install our PHP dependencies and generate our autoloader with `docker-compose run simplecache && composer install`
 
 ### PHP Service
 
@@ -421,7 +425,7 @@ appserver_from_within_container:
 	cd appserver && go build -o appserver
 ```
 
-Now `make build-appserver-server` will out put `appserver/appserver`.
+Now `make build-appserver-server` will output `appserver/appserver`.
 
 ### Running our gRPC service
 
@@ -532,7 +536,15 @@ The gRPC ecosystem has created gRPC Gateway as a way to use gRPC / protobuf APIs
 
 This could be done as a separate server or within our appserver by listening on a separate port. Here we'll show how to create it as a separate service. All the code for the gateway will go in `mkdir gateway`. Then similar to how we created the appserver module earlier, we'll create a module for the gateway:
 
-`go mod init github.com/khepin/simplecache/gateway`.
+```bash
+# exec into the proto container
+docker-compose run proto bash
+# navigate to gateway directory
+cd gateway
+# Create a go module for our gateway (change `khepin` for your own username)
+go mod init github.com/khepin/simplecache/gateway
+touch main.go
+```
 
 And we'll add similar build targets in the `Makefile`:
 
@@ -543,6 +555,8 @@ gateway/gateway: $(wildcard gateway/**/*.go) $(wildcard gateway/*.go)
 gateway_from_within_container:
 	cd gateway && go build -o gateway
 ```
+
+Run `make build-gateway-server` to build the gateway bash script (a `gateway` binary file will be created inside gateway directory).
 
 Before we can write the gateway code, we need to generate the Golang protobuf code.
 
@@ -576,6 +590,8 @@ RUN cd /protobuf \
 The proto definition also needs to be updated with the name of the go package to generate code for:
 
 ```proto
+// simplecache.proto
+// ...
 option go_package="github.com/khepin/simplecache/gateway/protos";
 ```
 
@@ -656,9 +672,12 @@ proto_from_within_container:
 	rm -rf gateway/protos/github.com
 ```
 
+Run `make proto` to update the files in the gateway directory
+
 With this in place, we've generated a swagger definition for our API: `swagger/simplecache.swagger.json` and can start creating the gateway server. Here's the Go code for that:
 
 ```go
+// gateway/main.go
 package main
 
 import (
@@ -706,6 +725,8 @@ And in `docker-compose.yaml` we add the gateway service:
 ```
 
 Before we can run our HTTP test, we still need to request the http protobuf definitions for PHP: `composer require google/common-protos`
+
+Make sure the docker container is up and running or else run `docker-compose up`
 
 We can now access our API via HTTP on localhost:8080. For example:
 
